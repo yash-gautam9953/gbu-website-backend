@@ -14,39 +14,39 @@ const portalRoleMap = {
   super_admin: [ROLES.SUPER_ADMIN],
 };
 
-const demoUsers = [
-  {
-    name: "Super Admin",
-    email: "admin@gbu.ac.in",
-    username: "admin",
-    role: ROLES.SUPER_ADMIN,
-    password: "Admin@123",
-  },
-  {
-    name: "School User",
-    email: "school@gbu.ac.in",
-    username: "school",
-    role: ROLES.SCHOOL,
-    password: "School@123",
-  },
-  {
-    name: "Faculty User",
-    email: "faculty@gbu.ac.in",
-    username: "faculty",
-    role: ROLES.FACULTY,
-    password: "Faculty@123",
-  },
-];
+// const demoUsers = [
+//   {
+//     name: "Super Admin",
+//     email: "admin@gbu.ac.in",
+//     username: "admin",
+//     role: ROLES.SUPER_ADMIN,
+//     password: "Admin@123",
+//   },
+//   {
+//     name: "School User",
+//     email: "school@gbu.ac.in",
+//     username: "school",
+//     role: ROLES.SCHOOL,
+//     password: "School@123",
+//   },
+//   {
+//     name: "Faculty User",
+//     email: "faculty@gbu.ac.in",
+//     username: "faculty",
+//     role: ROLES.FACULTY,
+//     password: "Faculty@123",
+//   },
+// ];
 
 let authBootstrapped = false;
 
-const normalizeEmail = (email) => String(email || "").trim().toLowerCase();
+const normalizeEmail = (email) =>
+  String(email || "")
+    .trim()
+    .toLowerCase();
 
 const hashValue = (value) => {
-  return crypto
-    .createHash("sha256")
-    .update(String(value))
-    .digest("hex");
+  return crypto.createHash("sha256").update(String(value)).digest("hex");
 };
 
 const hashOtp = (otpCode) => hashValue(`${String(otpCode)}:${env.otpPepper}`);
@@ -92,11 +92,41 @@ const signRefreshToken = (user) => {
 const assertStrongPassword = (password) => {
   const value = String(password || "");
   if (value.length < 8) return "Password must be at least 8 characters";
-  if (!/[A-Z]/.test(value)) return "Password must include at least one uppercase letter";
-  if (!/[a-z]/.test(value)) return "Password must include at least one lowercase letter";
+  if (!/[A-Z]/.test(value))
+    return "Password must include at least one uppercase letter";
+  if (!/[a-z]/.test(value))
+    return "Password must include at least one lowercase letter";
   if (!/[0-9]/.test(value)) return "Password must include at least one digit";
-  if (!/[^A-Za-z0-9]/.test(value)) return "Password must include at least one special character";
+  if (!/[^A-Za-z0-9]/.test(value))
+    return "Password must include at least one special character";
   return null;
+};
+
+const isIgnorableBootstrapIndexError = (error) => {
+  if (!error) {
+    return false;
+  }
+
+  const message = String(error.message || "").toLowerCase();
+
+  // Index DDL and ALTER TABLE are optional for runtime auth behavior; ignore if current DB user is not owner.
+  return (
+    error.code === "42501" &&
+    (message.includes("must be owner of table") ||
+      message.includes("permission denied for table") ||
+      message.includes("permission denied for relation"))
+  );
+};
+
+const createIndexIfAllowed = async (sql) => {
+  try {
+    await query(sql);
+  } catch (error) {
+    if (isIgnorableBootstrapIndexError(error)) {
+      return;
+    }
+    throw error;
+  }
 };
 
 const ensureAuthBootstrap = async () => {
@@ -123,10 +153,18 @@ const ensureAuthBootstrap = async () => {
     );
   `);
 
-  await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(80);`);
-  await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS linked_faculty_id VARCHAR(120) NOT NULL DEFAULT '';`);
-  await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS linked_school VARCHAR(80) NOT NULL DEFAULT '';`);
-  await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS linked_department VARCHAR(120) NOT NULL DEFAULT '';`);
+  await createIndexIfAllowed(
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(80);`,
+  );
+  await createIndexIfAllowed(
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS linked_faculty_id VARCHAR(120) NOT NULL DEFAULT '';`,
+  );
+  await createIndexIfAllowed(
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS linked_school VARCHAR(80) NOT NULL DEFAULT '';`,
+  );
+  await createIndexIfAllowed(
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS linked_department VARCHAR(120) NOT NULL DEFAULT '';`,
+  );
 
   await query(`
     CREATE TABLE IF NOT EXISTS auth_refresh_tokens (
@@ -153,51 +191,27 @@ const ensureAuthBootstrap = async () => {
     );
   `);
 
-  await query(
+  await createIndexIfAllowed(
     `CREATE INDEX IF NOT EXISTS idx_users_email ON users((LOWER(email)));`,
   );
-  await query(
+  await createIndexIfAllowed(
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_unique ON users((LOWER(username))) WHERE username IS NOT NULL;`,
   );
-  await query(
+  await createIndexIfAllowed(
     `CREATE INDEX IF NOT EXISTS idx_users_role_linked_school ON users(role, (LOWER(linked_school)));`,
   );
-  await query(
+  await createIndexIfAllowed(
     `CREATE INDEX IF NOT EXISTS idx_users_role_linked_faculty_id ON users(role, (LOWER(linked_faculty_id)));`,
   );
-  await query(
+  await createIndexIfAllowed(
     `CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_active ON auth_refresh_tokens(user_id, revoked_at, expires_at);`,
   );
-  await query(
+  await createIndexIfAllowed(
     `CREATE INDEX IF NOT EXISTS idx_password_reset_otps_user_active ON password_reset_otps(user_id, consumed_at, expires_at, created_at DESC);`,
   );
 
-  for (const item of demoUsers) {
-    try {
-      const passwordHash = await bcrypt.hash(item.password, 12);
-      await query(
-        `
-        INSERT INTO users (name, email, username, role, password_hash, is_active, email_verified)
-        VALUES ($1, $2, $3, $4, $5, TRUE, TRUE)
-        ON CONFLICT (email) DO UPDATE
-        SET username = COALESCE(users.username, EXCLUDED.username);
-        `,
-        [item.name, item.email, item.username, item.role, passwordHash],
-      );
-
-      await query(
-        `
-        UPDATE users
-        SET username = $1
-        WHERE LOWER(email) = LOWER($2)
-          AND (username IS NULL OR TRIM(username) = '');
-        `,
-        [item.username, item.email],
-      );
-    } catch (err) {
-      console.warn(`[Bootstrap] Skipping demo user ${item.email}: ${err.message}`);
-    }
-  }
+  // Note: Demo users are inserted manually via DB scripts or admin panel
+  // Auth is pure DB-backed - no hardcoded credentials in code
 
   authBootstrapped = true;
 };
@@ -208,9 +222,9 @@ const login = async (email, password, portalRole, requestMeta = {}) => {
 
   const userResult = await query(
     `
-    SELECT id, name, email, username, role, password_hash, is_active
+    SELECT id, name, email, role, password_hash, is_active
     FROM users
-    WHERE LOWER(email) = $1 OR LOWER(COALESCE(username, '')) = $1
+    WHERE LOWER(email) = $1
     LIMIT 1
     `,
     [normalizedLoginId],
@@ -266,7 +280,6 @@ const login = async (email, password, portalRole, requestMeta = {}) => {
       id: user.id,
       name: user.name,
       email: user.email,
-      username: user.username,
       role: user.role,
     },
     accessToken,
@@ -427,7 +440,11 @@ const verifyOtpAndResetPassword = async ({ email, otp, newPassword }) => {
 
   const user = userResult.rows[0];
   if (!user || !user.is_active) {
-    return { success: false, code: "INVALID_REQUEST", message: "Invalid email or OTP" };
+    return {
+      success: false,
+      code: "INVALID_REQUEST",
+      message: "Invalid email or OTP",
+    };
   }
 
   const otpResult = await query(
@@ -445,7 +462,11 @@ const verifyOtpAndResetPassword = async ({ email, otp, newPassword }) => {
 
   const activeOtp = otpResult.rows[0];
   if (!activeOtp) {
-    return { success: false, code: "OTP_EXPIRED", message: "OTP expired. Please request a new OTP" };
+    return {
+      success: false,
+      code: "OTP_EXPIRED",
+      message: "OTP expired. Please request a new OTP",
+    };
   }
 
   const incomingOtpHash = hashOtp(otp);
