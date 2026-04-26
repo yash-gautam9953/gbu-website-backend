@@ -224,6 +224,35 @@ const parseEventId = (value) => {
   return Number.parseInt(value, 10);
 };
 
+const hasOwn = (payload, key) =>
+  Object.prototype.hasOwnProperty.call(payload || {}, key);
+
+const toNonNegativeInt = (value, fallback = 0) => {
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return parsed;
+};
+
+const parseBoolean = (value, fallback) => {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes"].includes(normalized)) {
+      return true;
+    }
+    if (["false", "0", "no"].includes(normalized)) {
+      return false;
+    }
+  }
+
+  return fallback;
+};
+
 const buildEventStartIso = (eventDate, eventTime) => {
   if (!eventDate) {
     return null;
@@ -569,6 +598,234 @@ router.get("/notices/:id", async (req, res) => {
   }
 });
 
+router.post(
+  "/notices",
+  authenticate,
+  authorize(ROLES.SUPER_ADMIN),
+  async (req, res) => {
+    const {
+      title,
+      content,
+      publishedDate,
+      type,
+      priority,
+      views,
+      isNew,
+      pdfUrl,
+    } = req.body;
+
+    const validationErrors = [];
+
+    if (!String(title || "").trim()) {
+      validationErrors.push({ field: "title", message: "title is required" });
+    }
+    if (!String(content || "").trim()) {
+      validationErrors.push({
+        field: "content",
+        message: "content is required",
+      });
+    }
+
+    const parsedPublishedDate = publishedDate
+      ? toDateOnlyString(publishedDate)
+      : toDateOnlyString(new Date());
+    if (publishedDate && !parsedPublishedDate) {
+      validationErrors.push({
+        field: "publishedDate",
+        message: "publishedDate must be a valid date",
+      });
+    }
+
+    if (validationErrors.length) {
+      return errorResponse(res, "Validation failed", validationErrors, 400);
+    }
+
+    try {
+      const insertResult = await query(
+        `
+        INSERT INTO notices (
+          title,
+          content,
+          published_date,
+          type,
+          priority,
+          views,
+          is_new,
+          pdf_url
+        ) VALUES (
+          $1, $2, $3::date, $4, $5, $6, $7, $8
+        )
+        RETURNING id, title, content, published_date, type, priority, views, is_new, pdf_url
+        `,
+        [
+          String(title).trim(),
+          String(content).trim(),
+          parsedPublishedDate,
+          String(type || "General").trim() || "General",
+          String(priority || "medium").trim() || "medium",
+          toNonNegativeInt(views, 0),
+          parseBoolean(isNew, true),
+          pdfUrl || null,
+        ],
+      );
+
+      return successResponse(
+        res,
+        "Notice created successfully",
+        mapAnnouncement(insertResult.rows[0]),
+        201,
+      );
+    } catch (error) {
+      return errorResponse(
+        res,
+        "Failed to create notice",
+        [{ field: "notice", message: error.message }],
+        500,
+      );
+    }
+  },
+);
+
+router.put(
+  "/notices/:id",
+  authenticate,
+  authorize(ROLES.SUPER_ADMIN),
+  async (req, res) => {
+    const id = parseEventId(req.params.id);
+
+    if (!id) {
+      return errorResponse(
+        res,
+        "Validation failed",
+        [{ field: "id", message: "Notice id must be a valid integer" }],
+        400,
+      );
+    }
+
+    const updates = [];
+    const values = [];
+    const validationErrors = [];
+
+    if (hasOwn(req.body, "title")) {
+      const title = String(req.body.title || "").trim();
+      if (!title) {
+        validationErrors.push({
+          field: "title",
+          message: "title cannot be empty",
+        });
+      } else {
+        updates.push(`title = $${values.length + 1}`);
+        values.push(title);
+      }
+    }
+
+    if (hasOwn(req.body, "content")) {
+      const content = String(req.body.content || "").trim();
+      if (!content) {
+        validationErrors.push({
+          field: "content",
+          message: "content cannot be empty",
+        });
+      } else {
+        updates.push(`content = $${values.length + 1}`);
+        values.push(content);
+      }
+    }
+
+    if (hasOwn(req.body, "publishedDate")) {
+      const parsedPublishedDate = toDateOnlyString(req.body.publishedDate);
+      if (!parsedPublishedDate) {
+        validationErrors.push({
+          field: "publishedDate",
+          message: "publishedDate must be a valid date",
+        });
+      } else {
+        updates.push(`published_date = $${values.length + 1}::date`);
+        values.push(parsedPublishedDate);
+      }
+    }
+
+    if (hasOwn(req.body, "type")) {
+      updates.push(`type = $${values.length + 1}`);
+      values.push(String(req.body.type || "General").trim() || "General");
+    }
+
+    if (hasOwn(req.body, "priority")) {
+      updates.push(`priority = $${values.length + 1}`);
+      values.push(String(req.body.priority || "medium").trim() || "medium");
+    }
+
+    if (hasOwn(req.body, "views")) {
+      updates.push(`views = $${values.length + 1}`);
+      values.push(toNonNegativeInt(req.body.views, 0));
+    }
+
+    if (hasOwn(req.body, "isNew")) {
+      updates.push(`is_new = $${values.length + 1}`);
+      values.push(parseBoolean(req.body.isNew, false));
+    }
+
+    if (hasOwn(req.body, "pdfUrl")) {
+      updates.push(`pdf_url = $${values.length + 1}`);
+      values.push(req.body.pdfUrl || null);
+    }
+
+    if (validationErrors.length) {
+      return errorResponse(res, "Validation failed", validationErrors, 400);
+    }
+
+    if (!updates.length) {
+      return errorResponse(
+        res,
+        "Validation failed",
+        [
+          {
+            field: "payload",
+            message: "At least one updatable field is required",
+          },
+        ],
+        400,
+      );
+    }
+
+    values.push(id);
+
+    try {
+      const updateResult = await query(
+        `
+        UPDATE notices
+        SET ${updates.join(", ")}
+        WHERE id = $${values.length}
+        RETURNING id, title, content, published_date, type, priority, views, is_new, pdf_url
+        `,
+        values,
+      );
+
+      if (!updateResult.rows.length) {
+        return errorResponse(
+          res,
+          "Notice not found",
+          [{ field: "id", message: "No notice found for this id" }],
+          404,
+        );
+      }
+
+      return successResponse(
+        res,
+        "Notice updated successfully",
+        mapAnnouncement(updateResult.rows[0]),
+      );
+    } catch (error) {
+      return errorResponse(
+        res,
+        "Failed to update notice",
+        [{ field: "notice", message: error.message }],
+        500,
+      );
+    }
+  },
+);
+
 router.get("/news", async (req, res) => {
   try {
     const listResult = await query(
@@ -645,6 +902,291 @@ router.get("/news/:id", async (req, res) => {
   }
 });
 
+router.post(
+  "/news",
+  authenticate,
+  authorize(ROLES.SUPER_ADMIN),
+  async (req, res) => {
+    const {
+      title,
+      summary,
+      excerpt,
+      content,
+      author,
+      department,
+      category,
+      publishedDate,
+      priority,
+      views,
+      likes,
+      featured,
+      isFeatured,
+      status,
+      coverImageUrl,
+      imageUrl,
+      tags,
+    } = req.body;
+
+    const validationErrors = [];
+
+    if (!String(title || "").trim()) {
+      validationErrors.push({ field: "title", message: "title is required" });
+    }
+    if (!String(content || "").trim()) {
+      validationErrors.push({
+        field: "content",
+        message: "content is required",
+      });
+    }
+
+    const parsedPublishedDate = publishedDate
+      ? toDateOnlyString(publishedDate)
+      : toDateOnlyString(new Date());
+    if (publishedDate && !parsedPublishedDate) {
+      validationErrors.push({
+        field: "publishedDate",
+        message: "publishedDate must be a valid date",
+      });
+    }
+
+    if (validationErrors.length) {
+      return errorResponse(res, "Validation failed", validationErrors, 400);
+    }
+
+    try {
+      const insertResult = await query(
+        `
+        INSERT INTO news (
+          title,
+          excerpt,
+          content,
+          author,
+          department,
+          category,
+          published_date,
+          priority,
+          views,
+          likes,
+          is_featured,
+          status,
+          image_url,
+          tags
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7::date, $8, $9, $10, $11, $12, $13, $14::jsonb
+        )
+        RETURNING
+          id, title, excerpt, content, published_date, author, department,
+          tags, category, priority, views, likes, image_url, is_featured, status
+        `,
+        [
+          String(title).trim(),
+          summary || excerpt || String(content).trim().slice(0, 200),
+          String(content).trim(),
+          author || null,
+          department || null,
+          String(category || "General").trim() || "General",
+          parsedPublishedDate,
+          String(priority || "medium").trim() || "medium",
+          toNonNegativeInt(views, 0),
+          toNonNegativeInt(likes, 0),
+          parseBoolean(isFeatured ?? featured, false),
+          String(status || "published").trim() || "published",
+          coverImageUrl || imageUrl || null,
+          JSON.stringify(normalizeTags(tags)),
+        ],
+      );
+
+      return successResponse(
+        res,
+        "News created successfully",
+        mapNewsItem(insertResult.rows[0]),
+        201,
+      );
+    } catch (error) {
+      return errorResponse(
+        res,
+        "Failed to create news",
+        [{ field: "news", message: error.message }],
+        500,
+      );
+    }
+  },
+);
+
+router.put(
+  "/news/:id",
+  authenticate,
+  authorize(ROLES.SUPER_ADMIN),
+  async (req, res) => {
+    const id = parseEventId(req.params.id);
+
+    if (!id) {
+      return errorResponse(
+        res,
+        "Validation failed",
+        [{ field: "id", message: "News id must be a valid integer" }],
+        400,
+      );
+    }
+
+    const updates = [];
+    const values = [];
+    const validationErrors = [];
+
+    if (hasOwn(req.body, "title")) {
+      const title = String(req.body.title || "").trim();
+      if (!title) {
+        validationErrors.push({
+          field: "title",
+          message: "title cannot be empty",
+        });
+      } else {
+        updates.push(`title = $${values.length + 1}`);
+        values.push(title);
+      }
+    }
+
+    if (hasOwn(req.body, "summary") || hasOwn(req.body, "excerpt")) {
+      updates.push(`excerpt = $${values.length + 1}`);
+      values.push(req.body.summary || req.body.excerpt || null);
+    }
+
+    if (hasOwn(req.body, "content")) {
+      const content = String(req.body.content || "").trim();
+      if (!content) {
+        validationErrors.push({
+          field: "content",
+          message: "content cannot be empty",
+        });
+      } else {
+        updates.push(`content = $${values.length + 1}`);
+        values.push(content);
+      }
+    }
+
+    if (hasOwn(req.body, "author")) {
+      updates.push(`author = $${values.length + 1}`);
+      values.push(req.body.author || null);
+    }
+
+    if (hasOwn(req.body, "department")) {
+      updates.push(`department = $${values.length + 1}`);
+      values.push(req.body.department || null);
+    }
+
+    if (hasOwn(req.body, "category")) {
+      updates.push(`category = $${values.length + 1}`);
+      values.push(String(req.body.category || "General").trim() || "General");
+    }
+
+    if (hasOwn(req.body, "publishedDate")) {
+      const parsedPublishedDate = toDateOnlyString(req.body.publishedDate);
+      if (!parsedPublishedDate) {
+        validationErrors.push({
+          field: "publishedDate",
+          message: "publishedDate must be a valid date",
+        });
+      } else {
+        updates.push(`published_date = $${values.length + 1}::date`);
+        values.push(parsedPublishedDate);
+      }
+    }
+
+    if (hasOwn(req.body, "priority")) {
+      updates.push(`priority = $${values.length + 1}`);
+      values.push(String(req.body.priority || "medium").trim() || "medium");
+    }
+
+    if (hasOwn(req.body, "views")) {
+      updates.push(`views = $${values.length + 1}`);
+      values.push(toNonNegativeInt(req.body.views, 0));
+    }
+
+    if (hasOwn(req.body, "likes")) {
+      updates.push(`likes = $${values.length + 1}`);
+      values.push(toNonNegativeInt(req.body.likes, 0));
+    }
+
+    if (hasOwn(req.body, "featured") || hasOwn(req.body, "isFeatured")) {
+      updates.push(`is_featured = $${values.length + 1}`);
+      values.push(
+        parseBoolean(req.body.isFeatured ?? req.body.featured, false),
+      );
+    }
+
+    if (hasOwn(req.body, "status")) {
+      updates.push(`status = $${values.length + 1}`);
+      values.push(String(req.body.status || "published").trim() || "published");
+    }
+
+    if (hasOwn(req.body, "coverImageUrl") || hasOwn(req.body, "imageUrl")) {
+      updates.push(`image_url = $${values.length + 1}`);
+      values.push(req.body.coverImageUrl || req.body.imageUrl || null);
+    }
+
+    if (hasOwn(req.body, "tags")) {
+      updates.push(`tags = $${values.length + 1}::jsonb`);
+      values.push(JSON.stringify(normalizeTags(req.body.tags)));
+    }
+
+    if (validationErrors.length) {
+      return errorResponse(res, "Validation failed", validationErrors, 400);
+    }
+
+    if (!updates.length) {
+      return errorResponse(
+        res,
+        "Validation failed",
+        [
+          {
+            field: "payload",
+            message: "At least one updatable field is required",
+          },
+        ],
+        400,
+      );
+    }
+
+    values.push(id);
+
+    try {
+      const updateResult = await query(
+        `
+        UPDATE news
+        SET ${updates.join(", ")}
+        WHERE id = $${values.length}
+        RETURNING
+          id, title, excerpt, content, published_date, author, department,
+          tags, category, priority, views, likes, image_url, is_featured, status
+        `,
+        values,
+      );
+
+      if (!updateResult.rows.length) {
+        return errorResponse(
+          res,
+          "News not found",
+          [{ field: "id", message: "No news found for this id" }],
+          404,
+        );
+      }
+
+      return successResponse(
+        res,
+        "News updated successfully",
+        mapNewsItem(updateResult.rows[0]),
+      );
+    } catch (error) {
+      return errorResponse(
+        res,
+        "Failed to update news",
+        [{ field: "news", message: error.message }],
+        500,
+      );
+    }
+  },
+);
+
 router.get("/media-gallery", async (req, res) => {
   try {
     const listResult = await query(
@@ -669,6 +1211,234 @@ router.get("/media-gallery", async (req, res) => {
     );
   }
 });
+
+router.post(
+  "/media-gallery",
+  authenticate,
+  authorize(ROLES.SUPER_ADMIN),
+  async (req, res) => {
+    const { title, category, year, publishedDate, images } = req.body;
+
+    const validationErrors = [];
+
+    if (!String(title || "").trim()) {
+      validationErrors.push({ field: "title", message: "title is required" });
+    }
+    if (!String(category || "").trim()) {
+      validationErrors.push({
+        field: "category",
+        message: "category is required",
+      });
+    }
+    if (!String(year || "").trim()) {
+      validationErrors.push({ field: "year", message: "year is required" });
+    }
+
+    const parsedPublishedDate = toDateOnlyString(publishedDate);
+    if (!parsedPublishedDate) {
+      validationErrors.push({
+        field: "publishedDate",
+        message: "publishedDate is required and must be a valid date",
+      });
+    }
+
+    const normalizedImages = normalizeJsonArray(images);
+    if (!normalizedImages.length) {
+      validationErrors.push({
+        field: "images",
+        message: "images must contain at least one item",
+      });
+    }
+
+    if (validationErrors.length) {
+      return errorResponse(res, "Validation failed", validationErrors, 400);
+    }
+
+    try {
+      const insertResult = await query(
+        `
+        INSERT INTO media_gallery (
+          title,
+          category,
+          year,
+          published_date,
+          images
+        ) VALUES (
+          $1, $2, $3, $4::date, $5::jsonb
+        )
+        RETURNING id, title, category, year, published_date, images
+        `,
+        [
+          String(title).trim(),
+          String(category).trim(),
+          String(year).trim(),
+          parsedPublishedDate,
+          JSON.stringify(normalizedImages),
+        ],
+      );
+
+      return successResponse(
+        res,
+        "Media gallery item created successfully",
+        mapMediaGalleryItem(insertResult.rows[0]),
+        201,
+      );
+    } catch (error) {
+      return errorResponse(
+        res,
+        "Failed to create media gallery item",
+        [{ field: "media_gallery", message: error.message }],
+        500,
+      );
+    }
+  },
+);
+
+router.put(
+  "/media-gallery/:id",
+  authenticate,
+  authorize(ROLES.SUPER_ADMIN),
+  async (req, res) => {
+    const id = parseEventId(req.params.id);
+
+    if (!id) {
+      return errorResponse(
+        res,
+        "Validation failed",
+        [
+          {
+            field: "id",
+            message: "Media gallery id must be a valid integer",
+          },
+        ],
+        400,
+      );
+    }
+
+    const updates = [];
+    const values = [];
+    const validationErrors = [];
+
+    if (hasOwn(req.body, "title")) {
+      const title = String(req.body.title || "").trim();
+      if (!title) {
+        validationErrors.push({
+          field: "title",
+          message: "title cannot be empty",
+        });
+      } else {
+        updates.push(`title = $${values.length + 1}`);
+        values.push(title);
+      }
+    }
+
+    if (hasOwn(req.body, "category")) {
+      const category = String(req.body.category || "").trim();
+      if (!category) {
+        validationErrors.push({
+          field: "category",
+          message: "category cannot be empty",
+        });
+      } else {
+        updates.push(`category = $${values.length + 1}`);
+        values.push(category);
+      }
+    }
+
+    if (hasOwn(req.body, "year")) {
+      const year = String(req.body.year || "").trim();
+      if (!year) {
+        validationErrors.push({
+          field: "year",
+          message: "year cannot be empty",
+        });
+      } else {
+        updates.push(`year = $${values.length + 1}`);
+        values.push(year);
+      }
+    }
+
+    if (hasOwn(req.body, "publishedDate")) {
+      const parsedPublishedDate = toDateOnlyString(req.body.publishedDate);
+      if (!parsedPublishedDate) {
+        validationErrors.push({
+          field: "publishedDate",
+          message: "publishedDate must be a valid date",
+        });
+      } else {
+        updates.push(`published_date = $${values.length + 1}::date`);
+        values.push(parsedPublishedDate);
+      }
+    }
+
+    if (hasOwn(req.body, "images")) {
+      const normalizedImages = normalizeJsonArray(req.body.images);
+      if (!normalizedImages.length) {
+        validationErrors.push({
+          field: "images",
+          message: "images must contain at least one item",
+        });
+      } else {
+        updates.push(`images = $${values.length + 1}::jsonb`);
+        values.push(JSON.stringify(normalizedImages));
+      }
+    }
+
+    if (validationErrors.length) {
+      return errorResponse(res, "Validation failed", validationErrors, 400);
+    }
+
+    if (!updates.length) {
+      return errorResponse(
+        res,
+        "Validation failed",
+        [
+          {
+            field: "payload",
+            message: "At least one updatable field is required",
+          },
+        ],
+        400,
+      );
+    }
+
+    values.push(id);
+
+    try {
+      const updateResult = await query(
+        `
+        UPDATE media_gallery
+        SET ${updates.join(", ")}
+        WHERE id = $${values.length}
+        RETURNING id, title, category, year, published_date, images
+        `,
+        values,
+      );
+
+      if (!updateResult.rows.length) {
+        return errorResponse(
+          res,
+          "Media gallery item not found",
+          [{ field: "id", message: "No media gallery item found for this id" }],
+          404,
+        );
+      }
+
+      return successResponse(
+        res,
+        "Media gallery item updated successfully",
+        mapMediaGalleryItem(updateResult.rows[0]),
+      );
+    } catch (error) {
+      return errorResponse(
+        res,
+        "Failed to update media gallery item",
+        [{ field: "media_gallery", message: error.message }],
+        500,
+      );
+    }
+  },
+);
 
 router.get("/events", async (req, res) => {
   try {
@@ -972,6 +1742,297 @@ router.post(
   },
 );
 
+router.put(
+  "/events/:id",
+  authenticate,
+  authorize(ROLES.SUPER_ADMIN),
+  async (req, res) => {
+    const eventId = parseEventId(req.params.id);
+
+    if (!eventId) {
+      return errorResponse(
+        res,
+        "Validation failed",
+        [{ field: "id", message: "Event id must be a valid integer" }],
+        400,
+      );
+    }
+
+    const hasDate = hasOwn(req.body, "date");
+    const hasTime = hasOwn(req.body, "time");
+    const hasStartsAt =
+      hasOwn(req.body, "startsAt") || hasOwn(req.body, "starts_at");
+    const hasEndsAt = hasOwn(req.body, "endsAt") || hasOwn(req.body, "ends_at");
+
+    const supportedKeys = [
+      "title",
+      "description",
+      "organizer",
+      "venue",
+      "location",
+      "type",
+      "category",
+      "mode",
+      "status",
+      "price",
+      "attendees",
+      "timeString",
+      "time_string",
+      "year",
+      "coverImageUrl",
+      "cover_image",
+      "image",
+      "registrationUrl",
+      "registration_url",
+      "tags",
+      "gallery",
+      "agenda",
+      "speakers",
+      "startsAt",
+      "starts_at",
+      "endsAt",
+      "ends_at",
+      "date",
+      "time",
+    ];
+
+    const hasAnySupportedField = supportedKeys.some((key) =>
+      hasOwn(req.body, key),
+    );
+
+    if (!hasAnySupportedField) {
+      return errorResponse(
+        res,
+        "Validation failed",
+        [
+          {
+            field: "payload",
+            message: "At least one updatable field is required",
+          },
+        ],
+        400,
+      );
+    }
+
+    const updates = [];
+    const values = [];
+    const validationErrors = [];
+
+    if (hasOwn(req.body, "title")) {
+      const title = String(req.body.title || "").trim();
+      if (!title) {
+        validationErrors.push({
+          field: "title",
+          message: "title cannot be empty",
+        });
+      } else {
+        updates.push(`title = $${values.length + 1}`);
+        values.push(title);
+      }
+    }
+
+    if (hasOwn(req.body, "description")) {
+      updates.push(`description = $${values.length + 1}`);
+      values.push(req.body.description || null);
+    }
+
+    if (hasOwn(req.body, "organizer")) {
+      updates.push(`organizer = $${values.length + 1}`);
+      values.push(req.body.organizer || null);
+    }
+
+    if (hasOwn(req.body, "venue") || hasOwn(req.body, "location")) {
+      const venue = String(req.body.venue || req.body.location || "").trim();
+      updates.push(`venue = $${values.length + 1}`);
+      values.push(venue || null);
+    }
+
+    if (hasOwn(req.body, "type") || hasOwn(req.body, "category")) {
+      updates.push(`type = $${values.length + 1}`);
+      values.push(
+        String(req.body.type || req.body.category || "General").trim() ||
+          "General",
+      );
+    }
+
+    if (hasOwn(req.body, "mode")) {
+      updates.push(`mode = $${values.length + 1}`);
+      values.push(String(req.body.mode || "Offline").trim() || "Offline");
+    }
+
+    if (hasOwn(req.body, "status")) {
+      updates.push(`status = $${values.length + 1}`);
+      values.push(String(req.body.status || "upcoming").trim() || "upcoming");
+    }
+
+    if (hasOwn(req.body, "price")) {
+      updates.push(`price = $${values.length + 1}`);
+      values.push(String(req.body.price || "Free").trim() || "Free");
+    }
+
+    if (hasOwn(req.body, "attendees")) {
+      updates.push(`attendees = $${values.length + 1}`);
+      values.push(toNonNegativeInt(req.body.attendees, 0));
+    }
+
+    if (hasStartsAt || hasDate || hasTime) {
+      const startsAtInput = req.body.startsAt || req.body.starts_at;
+      let normalizedStartsAt = null;
+
+      if (startsAtInput) {
+        normalizedStartsAt = parseTimestampInput(startsAtInput);
+        if (!normalizedStartsAt) {
+          validationErrors.push({
+            field: "startsAt",
+            message: "startsAt must be a valid datetime",
+          });
+        }
+      } else {
+        const parsedDate = toDateOnlyString(req.body.date);
+        const parsedTime = parseTimeString(req.body.time);
+
+        if (!parsedDate) {
+          validationErrors.push({
+            field: "date",
+            message: "date must be a valid date when updating event time",
+          });
+        }
+
+        if (hasTime && !parsedTime) {
+          validationErrors.push({
+            field: "time",
+            message: "time must be in HH:mm format",
+          });
+        }
+
+        if (parsedDate) {
+          normalizedStartsAt = `${parsedDate} ${parsedTime || "00:00"}:00`;
+        }
+      }
+
+      if (normalizedStartsAt) {
+        updates.push(`starts_at = $${values.length + 1}::timestamp`);
+        values.push(normalizedStartsAt);
+      }
+    }
+
+    if (hasEndsAt) {
+      const endsAtInput = req.body.endsAt || req.body.ends_at;
+      const normalizedEndsAt = endsAtInput
+        ? parseTimestampInput(endsAtInput)
+        : null;
+
+      if (endsAtInput && !normalizedEndsAt) {
+        validationErrors.push({
+          field: "endsAt",
+          message: "endsAt must be a valid datetime",
+        });
+      } else {
+        updates.push(`ends_at = $${values.length + 1}::timestamp`);
+        values.push(normalizedEndsAt);
+      }
+    }
+
+    if (hasOwn(req.body, "timeString") || hasOwn(req.body, "time_string")) {
+      const normalizedTimeString = String(
+        req.body.timeString || req.body.time_string || "",
+      ).trim();
+
+      updates.push(`time_string = $${values.length + 1}`);
+      values.push(normalizedTimeString || null);
+    }
+
+    if (hasOwn(req.body, "year")) {
+      updates.push(`year = $${values.length + 1}`);
+      values.push(String(req.body.year || "").trim() || null);
+    }
+
+    if (
+      hasOwn(req.body, "coverImageUrl") ||
+      hasOwn(req.body, "cover_image") ||
+      hasOwn(req.body, "image")
+    ) {
+      updates.push(`cover_image = $${values.length + 1}`);
+      values.push(
+        req.body.coverImageUrl ||
+          req.body.cover_image ||
+          req.body.image ||
+          null,
+      );
+    }
+
+    if (
+      hasOwn(req.body, "registrationUrl") ||
+      hasOwn(req.body, "registration_url")
+    ) {
+      updates.push(`registration_url = $${values.length + 1}`);
+      values.push(
+        req.body.registrationUrl || req.body.registration_url || null,
+      );
+    }
+
+    if (hasOwn(req.body, "tags")) {
+      updates.push(`tags = $${values.length + 1}::jsonb`);
+      values.push(JSON.stringify(normalizeTags(req.body.tags)));
+    }
+
+    if (hasOwn(req.body, "gallery")) {
+      updates.push(`gallery = $${values.length + 1}::jsonb`);
+      values.push(JSON.stringify(normalizeJsonArray(req.body.gallery)));
+    }
+
+    if (hasOwn(req.body, "agenda")) {
+      updates.push(`agenda = $${values.length + 1}::jsonb`);
+      values.push(JSON.stringify(normalizeJsonArray(req.body.agenda)));
+    }
+
+    if (hasOwn(req.body, "speakers")) {
+      updates.push(`speakers = $${values.length + 1}::jsonb`);
+      values.push(JSON.stringify(normalizeJsonArray(req.body.speakers)));
+    }
+
+    if (validationErrors.length) {
+      return errorResponse(res, "Validation failed", validationErrors, 400);
+    }
+
+    values.push(eventId);
+
+    try {
+      const updateResult = await query(
+        `
+        UPDATE events
+        SET ${updates.join(", ")}
+        WHERE id = $${values.length}
+        RETURNING *
+        `,
+        values,
+      );
+
+      if (!updateResult.rows.length) {
+        return errorResponse(
+          res,
+          "Event not found",
+          [{ field: "id", message: "No event found for this id" }],
+          404,
+        );
+      }
+
+      return successResponse(
+        res,
+        "Event updated successfully",
+        mapEvent(updateResult.rows[0]),
+      );
+    } catch (error) {
+      return errorResponse(
+        res,
+        "Failed to update event",
+        [{ field: "event", message: error.message }],
+        500,
+      );
+    }
+  },
+);
+
 router.post(
   "/newsletters",
   authenticate,
@@ -1101,6 +2162,152 @@ router.post(
       );
     } finally {
       client.release();
+    }
+  },
+);
+
+router.put(
+  "/newsletters/:id",
+  authenticate,
+  authorize(ROLES.SUPER_ADMIN),
+  async (req, res) => {
+    const id = parseEventId(req.params.id);
+
+    if (!id) {
+      return errorResponse(
+        res,
+        "Validation failed",
+        [{ field: "id", message: "Newsletter id must be a valid integer" }],
+        400,
+      );
+    }
+
+    const updates = [];
+    const values = [];
+    const validationErrors = [];
+
+    if (hasOwn(req.body, "title")) {
+      const title = String(req.body.title || "").trim();
+      if (!title) {
+        validationErrors.push({
+          field: "title",
+          message: "title cannot be empty",
+        });
+      } else {
+        updates.push(`title = $${values.length + 1}`);
+        values.push(title);
+      }
+    }
+
+    if (hasOwn(req.body, "issueNo") || hasOwn(req.body, "issueNumber")) {
+      updates.push(`issue_number = $${values.length + 1}`);
+      values.push(
+        String(req.body.issueNumber || req.body.issueNo || "").trim() || null,
+      );
+    }
+
+    if (hasOwn(req.body, "issueDate") || hasOwn(req.body, "publishedDate")) {
+      const parsedDate = toDateOnlyString(
+        req.body.issueDate || req.body.publishedDate,
+      );
+      if (!parsedDate) {
+        validationErrors.push({
+          field: "publishedDate",
+          message: "issueDate or publishedDate must be a valid date",
+        });
+      } else {
+        updates.push(`published_date = $${values.length + 1}::date`);
+        values.push(parsedDate);
+      }
+    }
+
+    if (hasOwn(req.body, "summary") || hasOwn(req.body, "excerpt")) {
+      updates.push(`excerpt = $${values.length + 1}`);
+      values.push(req.body.summary || req.body.excerpt || null);
+    }
+
+    if (hasOwn(req.body, "pdfUrl")) {
+      updates.push(`pdf_url = $${values.length + 1}`);
+      values.push(req.body.pdfUrl || null);
+    }
+
+    if (hasOwn(req.body, "coverImageUrl")) {
+      updates.push(`cover_image_url = $${values.length + 1}`);
+      values.push(req.body.coverImageUrl || null);
+    }
+
+    if (hasOwn(req.body, "views")) {
+      updates.push(`views = $${values.length + 1}`);
+      values.push(toNonNegativeInt(req.body.views, 0));
+    }
+
+    if (hasOwn(req.body, "category")) {
+      updates.push(`category = $${values.length + 1}`);
+      values.push(String(req.body.category || "General").trim() || "General");
+    }
+
+    if (validationErrors.length) {
+      return errorResponse(res, "Validation failed", validationErrors, 400);
+    }
+
+    if (!updates.length) {
+      return errorResponse(
+        res,
+        "Validation failed",
+        [
+          {
+            field: "payload",
+            message: "At least one updatable field is required",
+          },
+        ],
+        400,
+      );
+    }
+
+    values.push(id);
+
+    try {
+      const updateResult = await query(
+        `
+        UPDATE newsletters
+        SET ${updates.join(", ")}
+        WHERE id = $${values.length}
+        RETURNING id, title, issue_number, published_date, cover_image_url, excerpt, pdf_url, views, category
+        `,
+        values,
+      );
+
+      if (!updateResult.rows.length) {
+        return errorResponse(
+          res,
+          "Newsletter not found",
+          [{ field: "id", message: "No newsletter found for this id" }],
+          404,
+        );
+      }
+
+      const row = updateResult.rows[0];
+      return successResponse(res, "Newsletter updated successfully", {
+        id: row.id,
+        title: row.title,
+        issueNumber: row.issue_number,
+        issueDate: row.published_date,
+        publishedDate: row.published_date,
+        summary: row.excerpt,
+        contentHtml: null,
+        pdfUrl: row.pdf_url,
+        coverImageUrl: row.cover_image_url,
+        views: row.views,
+        category: row.category,
+        isPublished: true,
+      });
+    } catch (error) {
+      return errorResponse(
+        res,
+        "Failed to update newsletter",
+        [{ field: "newsletter", message: error.message }],
+        500,
+      );
     }
   },
 );
