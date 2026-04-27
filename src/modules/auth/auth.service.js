@@ -71,6 +71,7 @@ const signAccessToken = (user) => {
       email: user.email,
       role: user.role,
       name: user.name,
+      schoolCode: user.linked_school_code,
     },
     env.jwtAccessSecret,
     { expiresIn: env.jwtAccessExpiresIn },
@@ -222,7 +223,7 @@ const login = async (email, password, portalRole, requestMeta = {}) => {
 
   const userResult = await query(
     `
-    SELECT id, name, email, role, password_hash, is_active
+    SELECT id, name, email, username, role, password_hash, is_active, force_password_reset, linked_school_code
     FROM users
     WHERE LOWER(email) = $1
     LIMIT 1
@@ -253,26 +254,103 @@ const login = async (email, password, portalRole, requestMeta = {}) => {
     }
   }
 
+  // Generate OTP for login
+  const otpCode = generateOtpCode();
+  const expiresAt = new Date(Date.now() + env.otpExpiresMinutes * 60 * 1000);
+
+  await query(
+    `
+    UPDATE password_reset_otps
+    SET consumed_at = NOW()
+    WHERE user_id = $1
+      AND consumed_at IS NULL
+      AND expires_at > NOW()
+    `,
+    [user.id],
+  );
+
+  await query(
+    `
+    INSERT INTO password_reset_otps (user_id, otp_hash, expires_at)
+    VALUES ($1, $2, $3)
+    `,
+    [user.id, hashOtp(otpCode), expiresAt],
+  );
+
+  const subject = "GBU Login Verification OTP";
+  const html = `
+    <p>Dear ${user.name},</p>
+    <p>Your OTP for login is:</p>
+    <h2 style="letter-spacing: 4px;">${otpCode}</h2>
+    <p>This OTP is valid for ${env.otpExpiresMinutes} minutes.</p>
+  `;
+  await sendMail({ to: user.email, subject, text: `Your OTP is ${otpCode}`, html });
+
+  return {
+    requiresOtp: true,
+    email: user.email,
+    forcePasswordReset: user.force_password_reset
+  };
+};
+
+const verifyLoginOtp = async (email, otp, newPassword, requestMeta = {}) => {
+  await ensureAuthBootstrap();
+  const normalizedEmail = normalizeEmail(email);
+
+  const userResult = await query(
+    `
+    SELECT id, name, email, username, role, password_hash, is_active, force_password_reset, linked_school_code
+    FROM users
+    WHERE LOWER(email) = $1
+    LIMIT 1
+    `,
+    [normalizedEmail],
+  );
+
+  const user = userResult.rows[0];
+  if (!user || !user.is_active) return { success: false, message: "Invalid user" };
+
+  const otpResult = await query(
+    `
+    SELECT id, otp_hash, attempts
+    FROM password_reset_otps
+    WHERE user_id = $1 AND consumed_at IS NULL AND expires_at > NOW()
+    ORDER BY created_at DESC LIMIT 1
+    `,
+    [user.id],
+  );
+
+  const activeOtp = otpResult.rows[0];
+  if (!activeOtp) return { success: false, message: "OTP expired. Please login again." };
+
+  if (hashOtp(otp) !== activeOtp.otp_hash) {
+    const nextAttempts = Number(activeOtp.attempts || 0) + 1;
+    await query(
+      `UPDATE password_reset_otps SET attempts = $2, consumed_at = CASE WHEN $2 >= $3 THEN NOW() ELSE consumed_at END WHERE id = $1`,
+      [activeOtp.id, nextAttempts, env.otpMaxAttempts]
+    );
+    return { success: false, message: "Invalid OTP" };
+  }
+
+  if (user.force_password_reset) {
+     if (!newPassword) return { success: false, message: "New password is required for first time login" };
+     const passwordError = assertStrongPassword(newPassword);
+     if (passwordError) return { success: false, message: passwordError };
+     const newPasswordHash = await bcrypt.hash(newPassword, 12);
+     await query(`UPDATE users SET password_hash = $2, force_password_reset = FALSE WHERE id = $1`, [newPasswordHash, user.id]);
+  }
+
+  await query(`UPDATE password_reset_otps SET consumed_at = NOW() WHERE id = $1`, [activeOtp.id]);
+
   const accessToken = signAccessToken(user);
   const refreshToken = signRefreshToken(user);
 
   await query(
     `
-    INSERT INTO auth_refresh_tokens (
-      user_id,
-      token_hash,
-      user_agent,
-      ip_address,
-      expires_at
-    ) VALUES ($1, $2, $3, $4, $5)
+    INSERT INTO auth_refresh_tokens (user_id, token_hash, user_agent, ip_address, expires_at)
+    VALUES ($1, $2, $3, $4, $5)
     `,
-    [
-      user.id,
-      hashValue(refreshToken),
-      requestMeta.userAgent || null,
-      requestMeta.ipAddress || null,
-      getExpiresAtFromToken(refreshToken),
-    ],
+    [user.id, hashValue(refreshToken), requestMeta.userAgent || null, requestMeta.ipAddress || null, getExpiresAtFromToken(refreshToken)]
   );
 
   return {
@@ -319,7 +397,7 @@ const refresh = async (token) => {
 
     const userResult = await query(
       `
-      SELECT id, name, email, role, is_active
+      SELECT id, name, email, role, is_active, linked_school_code
       FROM users
       WHERE id = $1
       LIMIT 1
@@ -536,6 +614,7 @@ const verifyOtpAndResetPassword = async ({ email, otp, newPassword }) => {
 module.exports = {
   ensureAuthBootstrap,
   login,
+  verifyLoginOtp,
   refresh,
   logout,
   requestPasswordResetOtp,

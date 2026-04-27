@@ -68,3 +68,8 @@ test-results/
 
 # Keep this if ever generated
 package-lock-backup.json
+
+full_dump.sql
+insert_ict_faculty.js
+test_json.js
+test_ocfd.js

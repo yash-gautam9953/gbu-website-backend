@@ -8,12 +8,14 @@ const {
   meHandler,
   forgotPasswordRequestHandler,
   forgotPasswordVerifyHandler,
+  verifyLoginOtpHandler,
 } = require("./auth.controller");
 const { authenticate } = require("../../middleware/auth");
 const { authRateLimiter } = require("../../middleware/rateLimit");
 
 const router = express.Router();
 
+router.post("/login/verify-otp", authRateLimiter, verifyLoginOtpHandler);
 router.post("/login/teacher", authRateLimiter, teacherLoginHandler);
 router.post("/login/school", authRateLimiter, schoolLoginHandler);
 router.post("/login/admin", authRateLimiter, adminLoginHandler);

@@ -336,9 +336,9 @@ const validateRoleLinks = async ({
 	return { errors: roleErrors };
 };
 
-router.use(authenticate, authorize(ROLES.SUPER_ADMIN));
+const adminAuth = [authenticate, authorize(ROLES.SUPER_ADMIN)];
 
-router.get("/admin/accounts", async (req, res) => {
+router.get("/admin/accounts", adminAuth, async (req, res) => {
 	try {
 		await ensureAuthBootstrap();
 		await ensureUsersAuditInfrastructure();
@@ -397,7 +397,7 @@ router.get("/admin/accounts", async (req, res) => {
 	}
 });
 
-router.post("/admin/accounts", async (req, res) => {
+router.post("/admin/accounts", adminAuth, async (req, res) => {
 	try {
 		await ensureAuthBootstrap();
 		await ensureUsersAuditInfrastructure();
@@ -504,7 +504,7 @@ router.post("/admin/accounts", async (req, res) => {
 	}
 });
 
-router.put("/admin/accounts/:id", async (req, res) => {
+router.put("/admin/accounts/:id", adminAuth, async (req, res) => {
 	try {
 		await ensureAuthBootstrap();
 		await ensureUsersAuditInfrastructure();
@@ -645,7 +645,7 @@ router.put("/admin/accounts/:id", async (req, res) => {
 	}
 });
 
-router.delete("/admin/accounts/:id", async (req, res) => {
+router.delete("/admin/accounts/:id", adminAuth, async (req, res) => {
 	try {
 		await ensureAuthBootstrap();
 		await ensureUsersAuditInfrastructure();
@@ -720,7 +720,7 @@ router.delete("/admin/accounts/:id", async (req, res) => {
 	}
 });
 
-router.get("/admin/accounts/audit-logs", async (req, res) => {
+router.get("/admin/accounts/audit-logs", adminAuth, async (req, res) => {
 	try {
 		await ensureAuthBootstrap();
 		await ensureUsersAuditInfrastructure();
@@ -807,7 +807,7 @@ router.get("/admin/accounts/audit-logs", async (req, res) => {
 	}
 });
 
-router.post("/admin/accounts/dispatch-credential-emails", async (req, res) => {
+router.post("/admin/accounts/dispatch-credential-emails", adminAuth, async (req, res) => {
 	try {
 		await ensureAuthBootstrap();
 

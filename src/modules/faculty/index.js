@@ -269,7 +269,7 @@ router.put("/faculty/me/profile", authenticate, authorize(ROLES.FACULTY), async 
    ADMIN ENDPOINTS (super_admin role required)
    ═══════════════════════════════════════════════════════════════ */
 
-const adminAuth = [authenticate, authorize(ROLES.SUPER_ADMIN)];
+const adminAuth = [authenticate, authorize(ROLES.SUPER_ADMIN, ROLES.SCHOOL)];
 
 // Admin: list faculty
 router.get("/admin/faculty", adminAuth, async (req, res) => {
@@ -287,13 +287,24 @@ router.get("/admin/faculty", adminAuth, async (req, res) => {
 		const clauses = ["1 = 1"];
 		const params = [];
 
+		if (req.user?.role === ROLES.SCHOOL) {
+			const userSchoolCode = normalize(req.user?.schoolCode).toLowerCase();
+			params.push(userSchoolCode);
+			clauses.push(`(LOWER(COALESCE(school_code,'')) = $${params.length} OR LOWER(COALESCE(school,'')) = $${params.length})`);
+		} else {
+			const school = normalize(req.query?.school).toLowerCase();
+			if (school) { 
+				params.push(school); 
+				clauses.push(`(LOWER(COALESCE(school_code,'')) = $${params.length} OR LOWER(COALESCE(school,'')) = $${params.length})`); 
+			}
+		}
+
 		if (queryText) {
 			params.push(`%${queryText}%`);
 			const idx = params.length;
 			clauses.push(`(LOWER(name) LIKE $${idx} OR LOWER(COALESCE(designation,'')) LIKE $${idx} OR LOWER(COALESCE(department,'')) LIKE $${idx} OR LOWER(COALESCE(school,'')) LIKE $${idx} OR LOWER(COALESCE(email,'')) LIKE $${idx} OR LOWER(COALESCE(phone,'')) LIKE $${idx} OR LOWER(id) LIKE $${idx})`);
 		}
 		if (department) { params.push(department); clauses.push(`LOWER(COALESCE(department,'')) = $${params.length}`); }
-		if (school) { params.push(school); clauses.push(`LOWER(COALESCE(school,'')) = $${params.length}`); }
 		if (status === "active" || status === "inactive") { params.push(status === "active"); clauses.push(`is_active = $${params.length}`); }
 
 		const whereClause = clauses.join(" AND ");
@@ -327,6 +338,15 @@ router.get("/admin/faculty/:id", adminAuth, async (req, res) => {
 		const result = await query(`SELECT ${FULL_SELECT} FROM faculty_profiles WHERE id = $1 LIMIT 1`, [id]);
 		if (!result.rows.length) return errorResponse(res, "Faculty not found", [], 404);
 
+		if (req.user?.role === ROLES.SCHOOL) {
+			const userSchoolCode = normalize(req.user?.schoolCode).toLowerCase();
+			const facSchoolCode = normalize(result.rows[0].school_code).toLowerCase();
+			const facSchoolName = normalize(result.rows[0].school).toLowerCase();
+			if (userSchoolCode && facSchoolCode !== userSchoolCode && facSchoolName !== userSchoolCode) {
+				return errorResponse(res, "Forbidden", [{ field: "school", message: "You do not have permission for this faculty" }], 403);
+			}
+		}
+
 		return successResponse(res, "Faculty profile fetched", mapFacultyFull(result.rows[0]));
 	} catch (error) {
 		return errorResponse(res, "Failed to fetch faculty", [{ field: "faculty", message: error.message }], 500);
@@ -343,9 +363,16 @@ router.post("/admin/faculty", adminAuth, async (req, res) => {
 		if (!name) return errorResponse(res, "Validation failed", [{ field: "name", message: "Faculty name is required" }], 400);
 
 		const b = req.body || {};
+		if (req.user?.role === ROLES.SCHOOL) {
+			b.school = normalize(req.user?.schoolCode) || b.school;
+		}
+		
+		const targetSchool = normalize(b.school);
+		const targetSchoolCode = targetSchool.toLowerCase() === 'soict' || targetSchool.toLowerCase().includes('information') ? 'soict' : targetSchool;
+
 		const result = await query(
 			`INSERT INTO faculty_profiles (
-				id, name, designation, department, school, email, phone, is_active,
+				id, name, designation, department, school, school_code, email, phone, is_active,
 				specialization, experience_years, publications_count, education,
 				short_bio, full_bio, office, image_url, faculty_url, cv_link,
 				google_scholar, orcid, tags, research_areas, tab_data,
@@ -353,7 +380,7 @@ router.post("/admin/faculty", adminAuth, async (req, res) => {
 			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21::jsonb,$22::jsonb,$23::jsonb,$24,$24,NOW())
 			RETURNING ${FULL_SELECT}`,
 			[
-				id, name, normalize(b.designation), normalize(b.department), normalize(b.school),
+				id, name, normalize(b.designation), normalize(b.department), targetSchool, targetSchoolCode,
 				normalize(b.email).toLowerCase(), normalize(b.phone), b.isActive !== false,
 				normalize(b.specialization), toSafeInt(b.experience_years, 0), toSafeInt(b.publications, 0),
 				normalize(b.education), normalize(b.shortBio), normalize(b.fullBio),
@@ -385,17 +412,36 @@ router.put("/admin/faculty/:id", adminAuth, async (req, res) => {
 		const name = normalize(req.body?.name);
 		if (!id || !name) return errorResponse(res, "Validation failed", [{ field: "id", message: "Faculty id is required" }, { field: "name", message: "Faculty name is required" }], 400);
 
+		const checkRes = await query(`SELECT school_code, school FROM faculty_profiles WHERE id = $1 LIMIT 1`, [id]);
+		if (!checkRes.rows.length) return errorResponse(res, "Faculty not found", [], 404);
+		
+		if (req.user?.role === ROLES.SCHOOL) {
+			const userSchoolCode = normalize(req.user?.schoolCode).toLowerCase();
+			const facSchoolCode = normalize(checkRes.rows[0].school_code).toLowerCase();
+			const facSchoolName = normalize(checkRes.rows[0].school).toLowerCase();
+			if (userSchoolCode && facSchoolCode !== userSchoolCode && facSchoolName !== userSchoolCode) {
+				return errorResponse(res, "Forbidden", [{ field: "school", message: "You do not have permission for this faculty" }], 403);
+			}
+		}
+
 		const b = req.body || {};
+		if (req.user?.role === ROLES.SCHOOL) {
+			b.school = normalize(req.user?.schoolCode) || b.school;
+		}
+
+		const targetSchool = normalize(b.school);
+		const targetSchoolCode = targetSchool.toLowerCase() === 'soict' || targetSchool.toLowerCase().includes('information') ? 'soict' : targetSchool;
+
 		const result = await query(
 			`UPDATE faculty_profiles SET
-				name=$2, designation=$3, department=$4, school=$5, email=$6, phone=$7, is_active=$8,
-				specialization=$9, experience_years=$10, publications_count=$11, education=$12,
-				short_bio=$13, full_bio=$14, office=$15, image_url=$16, faculty_url=$17, cv_link=$18,
-				google_scholar=$19, orcid=$20, tags=$21::jsonb, research_areas=$22::jsonb, tab_data=$23::jsonb,
-				updated_by=$24, updated_at=NOW()
+				name=$2, designation=$3, department=$4, school=$5, school_code=$6, email=$7, phone=$8, is_active=$9,
+				specialization=$10, experience_years=$11, publications_count=$12, education=$13,
+				short_bio=$14, full_bio=$15, office=$16, image_url=$17, faculty_url=$18, cv_link=$19,
+				google_scholar=$20, orcid=$21, tags=$22::jsonb, research_areas=$23::jsonb, tab_data=$24::jsonb,
+				updated_by=$25, updated_at=NOW()
 			WHERE id=$1 RETURNING ${FULL_SELECT}`,
 			[
-				id, name, normalize(b.designation), normalize(b.department), normalize(b.school),
+				id, name, normalize(b.designation), normalize(b.department), targetSchool, targetSchoolCode,
 				normalize(b.email).toLowerCase(), normalize(b.phone), b.isActive !== false,
 				normalize(b.specialization), toSafeInt(b.experience_years, 0), toSafeInt(b.publications, 0),
 				normalize(b.education), normalize(b.shortBio), normalize(b.fullBio),
@@ -423,6 +469,18 @@ router.delete("/admin/faculty/:id", adminAuth, async (req, res) => {
 		const id = normalize(req.params?.id);
 		if (!id) return errorResponse(res, "Validation failed", [{ field: "id", message: "Faculty id is required" }], 400);
 
+		const checkRes = await query(`SELECT school_code, school FROM faculty_profiles WHERE id = $1 LIMIT 1`, [id]);
+		if (!checkRes.rows.length) return errorResponse(res, "Faculty not found", [], 404);
+		
+		if (req.user?.role === ROLES.SCHOOL) {
+			const userSchoolCode = normalize(req.user?.schoolCode).toLowerCase();
+			const facSchoolCode = normalize(checkRes.rows[0].school_code).toLowerCase();
+			const facSchoolName = normalize(checkRes.rows[0].school).toLowerCase();
+			if (userSchoolCode && facSchoolCode !== userSchoolCode && facSchoolName !== userSchoolCode) {
+				return errorResponse(res, "Forbidden", [{ field: "school", message: "You do not have permission for this faculty" }], 403);
+			}
+		}
+
 		const linkedResult = await query(
 			`SELECT id FROM users WHERE role = $1 AND LOWER(COALESCE(linked_faculty_id,'')) = LOWER($2) LIMIT 1`,
 			[ROLES.FACULTY, id]
@@ -435,6 +493,50 @@ router.delete("/admin/faculty/:id", adminAuth, async (req, res) => {
 		return successResponse(res, "Faculty profile deleted successfully", { id: result.rows[0].id });
 	} catch (error) {
 		return errorResponse(res, "Failed to delete faculty", [{ field: "faculty", message: error.message }], 500);
+	}
+});
+
+// Admin/School: Generate password for faculty
+router.post("/admin/faculty/:id/generate-password", authenticate, authorize(ROLES.SUPER_ADMIN, ROLES.SCHOOL), async (req, res) => {
+	try {
+		await ensureFacultyContext();
+		const id = normalize(req.params?.id);
+		if (!id) return errorResponse(res, "Faculty id is required", [], 400);
+
+		const facultyRes = await query(`SELECT * FROM faculty_profiles WHERE id = $1 LIMIT 1`, [id]);
+		if (!facultyRes.rows.length) return errorResponse(res, "Faculty not found", [], 404);
+		const faculty = facultyRes.rows[0];
+
+		if (req.user?.role === ROLES.SCHOOL) {
+			const userSchoolCode = normalize(req.user?.schoolCode).toLowerCase();
+			const facSchoolCode = normalize(faculty.school_code).toLowerCase();
+			const facSchoolName = normalize(faculty.school).toLowerCase();
+			if (userSchoolCode && facSchoolCode !== userSchoolCode && facSchoolName !== userSchoolCode) {
+				return errorResponse(res, "Forbidden", [{ field: "school", message: "You do not have permission for this faculty" }], 403);
+			}
+		}
+
+		const userRes = await query(`SELECT id FROM users WHERE linked_faculty_id = $1 LIMIT 1`, [id]);
+		if (userRes.rows.length) {
+			return errorResponse(res, "Account already generated", [{ field: "password", message: "Password has already been generated" }], 400);
+		}
+
+		const bcrypt = require('bcryptjs');
+		const firstName = faculty.name.split(' ')[0];
+		const currentYear = new Date().getFullYear();
+		const plainPassword = `${firstName}${currentYear}`;
+		const passwordHash = await bcrypt.hash(plainPassword, 10);
+
+		const username = faculty.email.split('@')[0];
+		await query(
+			`INSERT INTO users (username, email, name, role, password_hash, linked_faculty_id, linked_school_code, force_password_reset) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE) RETURNING id`,
+			[username, faculty.email, faculty.name, ROLES.FACULTY, passwordHash, id, faculty.school_code]
+		);
+
+		return successResponse(res, "Password generated successfully", { password: plainPassword });
+	} catch (error) {
+		return errorResponse(res, "Failed to generate password", [{ field: "faculty", message: error.message }], 500);
 	}
 });
 
