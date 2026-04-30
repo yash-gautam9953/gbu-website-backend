@@ -158,14 +158,10 @@ CREATE TABLE news
         id SERIAL PRIMARY KEY,
         name VARCHAR(120) NOT NULL,
         email VARCHAR(255) UNIQUE NOT NULL,
-        username VARCHAR(80),
         role VARCHAR(30) NOT NULL,
         password_hash VARCHAR(255) NOT NULL,
         is_active BOOLEAN NOT NULL DEFAULT TRUE,
         email_verified BOOLEAN NOT NULL DEFAULT TRUE,
-        linked_faculty_id VARCHAR(120) NOT NULL DEFAULT '',
-        linked_school VARCHAR(80) NOT NULL DEFAULT '',
-        linked_department VARCHAR(120) NOT NULL DEFAULT '',
         password_updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
         created_at TIMESTAMP NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMP NOT NULL DEFAULT NOW()
@@ -197,36 +193,23 @@ CREATE TABLE news
       -- =====================================
       -- PERFORMANCE INDEXES
       -- =====================================
-      CREATE INDEX
-      IF NOT EXISTS idx_tenders_active_closing_date
-      ON tenders
-      (is_active, closing_date DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS idx_tenders_active_closing_date
+      ON tenders(is_active, closing_date DESC, id DESC);
 
-      CREATE INDEX
-      IF NOT EXISTS idx_recruitments_active_closing_published
-      ON recruitments
-      (is_active, closing_date DESC, published_date DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS idx_recruitments_active_closing_published
+      ON recruitments(is_active, closing_date DESC, published_date DESC, id DESC);
 
-      CREATE INDEX
-      IF NOT EXISTS idx_recruitment_documents_recruitment_active_sort
-      ON recruitment_documents
-      (recruitment_id, is_active, sort_order, id);
+      CREATE INDEX IF NOT EXISTS idx_recruitment_documents_recruitment_active_sort
+      ON recruitment_documents(recruitment_id, is_active, sort_order, id);
 
-      CREATE INDEX
-      IF NOT EXISTS idx_users_email
-      ON users
-      ((LOWER
-      (email)));
+      CREATE INDEX IF NOT EXISTS idx_users_email
+      ON users((LOWER(email)));
 
-      CREATE INDEX
-      IF NOT EXISTS idx_refresh_tokens_user_active
-      ON auth_refresh_tokens
-      (user_id, revoked_at, expires_at);
+      CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_active
+      ON auth_refresh_tokens(user_id, revoked_at, expires_at);
 
-      CREATE INDEX
-      IF NOT EXISTS idx_password_reset_otps_user_active
-      ON password_reset_otps
-      (user_id, consumed_at, expires_at, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_password_reset_otps_user_active
+      ON password_reset_otps(user_id, consumed_at, expires_at, created_at DESC);
 
       -- =====================================
       -- INSERT ONLY 1 RECORD PER CORE TABLE
@@ -533,12 +516,11 @@ CREATE TABLE news
         (8, 'Archive Notice', 'archive', '/documents/recruitments/2021-staff-archive.pdf', 'Archived recruitment notice', 1, TRUE);
 
       INSERT INTO users
-        (name, email, username, role, password_hash, is_active, email_verified)
+        (name, email, role, password_hash, is_active, email_verified)
       VALUES
         (
           'Super Admin',
           'admin@gbu.ac.in',
-          'admin',
           'super_admin',
           '$2a$12$dEzir0NPhvUD3RZ5QAzeSO2213TvpwDlvBcMwtaRqLkQi484bAJ3e',
           TRUE,
@@ -548,7 +530,6 @@ CREATE TABLE news
           'School User',
           'school@gbu.ac.in',
           'school',
-          'school',
           '$2a$12$eJxabWOjjEIk3ew/4cTOieuB8Lriq8CG7wxz2z/QD24cb5en1dFb2',
           TRUE,
           TRUE
@@ -556,7 +537,6 @@ CREATE TABLE news
         (
           'Faculty User',
           'faculty@gbu.ac.in',
-          'faculty',
           'faculty',
           '$2a$12$EBWLo4rfeBJMD9LEkqCyZu/tuZNWyMYLVn1yNcwKMxnXV0g5HPlN.',
           TRUE,

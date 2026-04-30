@@ -6,7 +6,7 @@ const env = {
   nodeEnv: process.env.NODE_ENV || "development",
   port: Number(process.env.PORT) || 3000,
   host: process.env.HOST || "0.0.0.0",
-  databaseUrl: process.env.DATABASE_URL || "",
+  databaseUrl: process.env.DATABASE_URL || "postgresql://gbu-user:12345678@localhost:5432/gbu_backend",
   dbSslEnabled: String(process.env.DB_SSL_ENABLED || "false") === "true",
   jwtAccessSecret: process.env.JWT_ACCESS_SECRET || "change-me-access-secret",
   jwtRefreshSecret:
